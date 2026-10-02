@@ -120,6 +120,16 @@ class FakePanel(BasePanel):
         self.clears += 1
 
 
+
+def _as_image(buffer):
+    """Real Waveshare getbuffer() wants a PIL Image; the node passes PNG bytes."""
+    if isinstance(buffer, (bytes, bytearray)):
+        import io
+        from PIL import Image
+        return Image.open(io.BytesIO(buffer)).convert("1")
+    return buffer
+
+
 class WaveshareEPDPanel(BasePanel):
     """
     Hardware panel driver targeting Waveshare 7.5inch V2 raw e-paper display
@@ -147,14 +157,14 @@ class WaveshareEPDPanel(BasePanel):
         self._epd.init()
 
     def display_full(self, buffer: bytes) -> None:
-        buf = self._epd.getbuffer(buffer)
+        buf = self._epd.getbuffer(_as_image(buffer))
         self._epd.display(buf)
 
     def init_part(self) -> None:
         self._epd.init_part()
 
     def display_partial(self, buffer: bytes) -> None:
-        buf = self._epd.getbuffer(buffer)
+        buf = self._epd.getbuffer(_as_image(buffer))
         self._epd.display_Partial(buf)
 
     def sleep(self) -> None:
