@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { FaceController, WORDS } = require('../static/js/face.js');
+const { FaceController, WORDS, mouthPoints } = require('../static/js/face.js');
 
 /**
  * Lightweight mock DOM element for hermetic Node.js testing.
@@ -220,4 +220,166 @@ test('mounts first inside .header-status when the header exists', () => {
   assert.equal(header.children[0], ctl.element);
   assert.equal(doc.body.children.length, 0);
   assert.equal(ctl.element.textContent, 'IDLE');
+});
+
+/**
+ * Mock document that also creates SVG elements, so the face stage mounts.
+ */
+function createSvgMockDocument() {
+  const doc = createMockDocument();
+  doc.svgCount = 0;
+  doc.createElementNS = (ns, tag) => {
+    doc.svgCount += 1;
+    return createMockElement(tag);
+  };
+  return doc;
+}
+
+/**
+ * Fake requestAnimationFrame: queues callbacks until the test runs them.
+ */
+function createFakeRaf() {
+  const raf = {
+    queue: [],
+    cancelled: [],
+    nextId: 1,
+    request(cb) {
+      const id = raf.nextId;
+      raf.nextId += 1;
+      raf.queue.push({ id, cb });
+      return id;
+    },
+    cancel(id) {
+      raf.cancelled.push(id);
+      raf.queue = raf.queue.filter((f) => f.id !== id);
+    },
+    // Runs the pending frame at timestamp `now` (ms).
+    run(now) {
+      const pending = raf.queue;
+      raf.queue = [];
+      for (const f of pending) f.cb(now);
+    },
+  };
+  return raf;
+}
+
+function mountStage({ search = '?face=1', raf, prefersReducedMotion = false } = {}) {
+  const doc = createSvgMockDocument();
+  const sseClient = {
+    handlers: new Map(),
+    on(eventType, fn) { this.handlers.set(eventType, fn); return this; },
+  };
+  const controller = withSearch(search, () => new FaceController({
+    sseClient,
+    document: doc,
+    raf: raf ? raf.request : undefined,
+    caf: raf ? raf.cancel : undefined,
+    prefersReducedMotion,
+  }));
+  const stage = doc.body.children.find((c) => c.id === 'amos-face-stage');
+  const svg = stage ? stage.children[0] : null;
+  const mouth = svg ? svg.children.find((c) => c.getAttribute('class') === 'af-mouth') : null;
+  return { controller, doc, stage, mouth, svg, sseClient };
+}
+
+function parsePoints(attr) {
+  return attr.split(' ').map((pair) => pair.split(',').map(Number));
+}
+
+test('Amos face stage', async (t) => {
+  await t.test('mouthPoints returns 33 points spanning x 20 to 80', () => {
+    const pts = mouthPoints(0.5, 14);
+    assert.equal(pts.length, 33);
+    assert.equal(pts[0][0], 20);
+    assert.ok(Math.abs(pts[32][0] - 80) < 1e-9);
+  });
+
+  await t.test('mouthPoints endpoints stay at y 50', () => {
+    for (const t0 of [0, 0.3, 1.7, 4.2]) {
+      const pts = mouthPoints(t0, 14);
+      assert.ok(Math.abs(pts[0][1] - 50) < 1e-9, `start at t=${t0}`);
+      assert.ok(Math.abs(pts[32][1] - 50) < 1e-9, `end at t=${t0}`);
+    }
+  });
+
+  await t.test('mouthPoints with amp 0 is flat', () => {
+    for (const [, y] of mouthPoints(2.3, 0)) assert.equal(y, 50);
+  });
+
+  await t.test('mouthPoints keeps every y within 50 plus or minus amp', () => {
+    for (let k = 0; k < 40; k += 1) {
+      const pts = mouthPoints(k * 0.137, 14);
+      for (const [, y] of pts) assert.ok(Math.abs(y - 50) <= 14 + 1e-9, `y=${y}`);
+    }
+  });
+
+  await t.test('stage is created only with face=1', () => {
+    const on = mountStage();
+    assert.ok(on.stage, 'stage present with face=1');
+    assert.equal(on.stage.id, 'amos-face-stage');
+    assert.equal(on.stage.dataset.state, 'idle');
+    assert.equal(on.stage.getAttribute('aria-hidden'), 'true');
+    assert.ok(on.mouth, 'mouth polyline present');
+
+    const off = mountStage({ search: '?face=0' });
+    assert.equal(off.stage, undefined);
+    assert.equal(off.doc.svgCount, 0);
+    assert.equal(off.doc.body.children.length, 0);
+  });
+
+  await t.test('stage ignored when the document cannot create SVG elements', () => {
+    const { doc, controller } = mountFace();
+    assert.equal(controller.stage, null);
+    assert.equal(doc.body.children.length, 1);
+  });
+
+  await t.test('speaking starts the loop and any other state cancels it', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth } = mountStage({ raf });
+    controller.setState('speaking');
+    assert.equal(raf.queue.length, 1, 'one frame queued');
+    raf.run(1000);
+    assert.equal(raf.queue.length, 1, 'loop re-queues itself');
+    assert.notEqual(parsePoints(mouth.getAttribute('points'))[16][1], 50, 'mouth moves while speaking');
+
+    controller.setState('listening');
+    assert.equal(raf.queue.length, 0, 'loop cancelled');
+    assert.equal(raf.cancelled.length, 1);
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50);
+  });
+
+  await t.test('frames closer than 33 ms are skipped', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth } = mountStage({ raf });
+    controller.setState('speaking');
+    raf.run(1000);
+    const first = mouth.getAttribute('points');
+    raf.run(1010);
+    assert.equal(mouth.getAttribute('points'), first, 'no redraw inside 33 ms');
+    raf.run(1100);
+    assert.notEqual(mouth.getAttribute('points'), first, 'redraw after 33 ms');
+  });
+
+  await t.test('error draws the zigzag mouth', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth } = mountStage({ raf });
+    controller.setState('error');
+    const pts = parsePoints(mouth.getAttribute('points'));
+    assert.equal(pts.length, 33);
+    assert.equal(pts[0][1], 44);
+    assert.equal(pts[1][1], 56);
+    assert.equal(pts[2][1], 44);
+    assert.equal(raf.queue.length, 0, 'no loop on error');
+  });
+
+  await t.test('reduced motion starts no loop and draws a static mouth of amp 6', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth, stage } = mountStage({ raf, prefersReducedMotion: true });
+    controller.setState('speaking');
+    assert.equal(raf.queue.length, 0, 'no rAF loop');
+    assert.equal(stage.dataset.state, 'speaking');
+    const pts = parsePoints(mouth.getAttribute('points'));
+    const dev = Math.max(...pts.map(([, y]) => Math.abs(y - 50)));
+    assert.ok(dev > 0 && dev <= 6 + 0.01, `static deviation ${dev}`);
+  });
 });
