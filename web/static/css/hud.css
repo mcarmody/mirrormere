@@ -3069,7 +3069,7 @@ button, .touch-target {
   pointer-events: none;
 }
 
-/* Conversation log: the bottom band under the face row. Last exchange only (see face.js CONVO_MAX). */
+/* Conversation log: the bottom band under the face row. Holds the last CONVO_MAX messages (see face.js). */
 .amos-face-convo {
   position: fixed;
   right: 3vh;
