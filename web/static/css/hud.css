@@ -3113,9 +3113,42 @@ button, .touch-target {
   animation: af-calm 3.6s ease-in-out infinite;
 }
 
+.amos-face-stage .af-ring,
+.amos-face-stage .af-mouth {
+  transition: stroke 0.3s ease;
+}
+
+.amos-face-stage[data-state="listening"] .af-ring,
+.amos-face-stage[data-state="listening"] .af-mouth {
+  stroke: #5aa0e6;
+}
+
+.amos-face-stage[data-state="transcribing"] .af-ring,
+.amos-face-stage[data-state="transcribing"] .af-mouth,
+.amos-face-stage[data-state="thinking"] .af-ring,
+.amos-face-stage[data-state="thinking"] .af-mouth {
+  stroke: #e0a24a;
+}
+
+.amos-face-stage[data-state="synthesizing"] .af-ring,
+.amos-face-stage[data-state="synthesizing"] .af-mouth,
+.amos-face-stage[data-state="speaking"] .af-ring,
+.amos-face-stage[data-state="speaking"] .af-mouth {
+  stroke: #b58be0;
+}
+
 .amos-face-stage[data-state="error"] .af-ring,
 .amos-face-stage[data-state="error"] .af-mouth {
-  stroke: #c9822b;
+  stroke: var(--mm-status-error);
+}
+
+/* The bottom-right 24vh square is reserved for the face. */
+body:has(.amos-face-stage) .grid-canvas {
+  grid-template-rows: 1fr 24vh;
+}
+
+body:has(.amos-face-stage) .grid-canvas > :not([data-dim-cols="2"]) {
+  grid-row: 1 / 2 !important;
 }
 
 @keyframes af-breathe {
