@@ -28,8 +28,10 @@
   const LEVEL_STALE_MS = 400;
   const LEVEL_GAIN = 2.2;
   const LEVEL_SPAN = 22;
-  const EASE_TAU_MS = 45;
+  const EASE_TAU_MS = 20;
   const EASE_MAX_DT_MS = 100;
+  const DECAY_TAU_MS = 120;
+  const DRAW_MIN_MS = 25;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
@@ -61,7 +63,7 @@
   }
 
   /**
-   * Spatial smoothing for a 33-value level frame: two passes of the kernel [1, 2, 1] / 4.
+   * Spatial smoothing for a 33-value level frame: one pass of the kernel [1, 2, 1] / 4.
    * Edge values reuse themselves as the missing neighbour. Returns a new array; input is not mutated.
    * @param {number[]} values
    * @returns {number[]}
@@ -77,7 +79,7 @@
       }
       return out;
     };
-    return pass(pass(values));
+    return pass(values);
   }
 
   /**
@@ -103,7 +105,7 @@
    * @param {number[]|null} current
    * @param {number[]} target
    * @param {number} dtMs
-   * @param {number} [tauMs=45]
+   * @param {number} [tauMs=20]
    * @returns {number[]}
    */
   function easeToward(current, target, dtMs, tauMs = EASE_TAU_MS) {
@@ -253,12 +255,12 @@
       ring.setAttribute('cy', '50');
       ring.setAttribute('r', '44');
       ring.setAttribute('fill', 'none');
-      ring.setAttribute('stroke-width', '2.5');
+      ring.setAttribute('stroke-width', '1.4');
 
       const mouth = doc.createElementNS(SVG_NS, 'polyline');
       mouth.setAttribute('class', 'af-mouth');
       mouth.setAttribute('fill', 'none');
-      mouth.setAttribute('stroke-width', '2.5');
+      mouth.setAttribute('stroke-width', '1.4');
       mouth.setAttribute('stroke-linecap', 'round');
 
       svg.appendChild(ring);
@@ -324,6 +326,7 @@
       const tick = (now) => {
         if (!this.looping) return;
         this.rafId = this.raf(tick);
+        if (this.lastTick !== null && now - this.lastTick < DRAW_MIN_MS) return;
         const dt = this.lastTick === null ? 0 : now - this.lastTick;
         this.lastTick = now;
         if (this.hasFreshLevels()) {
@@ -331,6 +334,13 @@
           this.shownY = easeToward(this.shownY, target.map(([, y]) => y), dt);
           this.drawMouth(target.map(([x], i) => [x, this.shownY[i]]));
           this.lastFrame = null;
+          return;
+        }
+        if (this.levelAt !== null) {
+          // Levels were seen this turn and have gone stale: ease the mouth flat instead of the procedural wave.
+          const flat = new Array(MOUTH_POINTS).fill(50);
+          this.shownY = easeToward(this.shownY, flat, dt, DECAY_TAU_MS);
+          this.drawMouth(mouthPoints(0, 0).map(([x], i) => [x, this.shownY[i]]));
           return;
         }
         this.shownY = null;

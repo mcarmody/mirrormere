@@ -454,9 +454,9 @@ test('Amos face waveform levels', async (t) => {
   await t.test('framePoints smooths a lone spike before mapping it', () => {
     const spike = new Array(33).fill(0);
     spike[16] = 100;
-    const pts = framePoints(spike);
-    // smoothed centre is 37.5, scaled 0.825, so y = 50 - 0.825 * 22 = 31.85; unsmoothed would clamp to y 28
-    assert.ok(Math.abs(pts[16][1] - 31.85) < 1e-9, `y=${pts[16][1]}`);
+    // one pass: smoothed centre is 50; at gain 1 that is level 0.5, so y = 50 - 0.5 * 22 = 39
+    const pts = framePoints(spike, 1);
+    assert.ok(Math.abs(pts[16][1] - 39) < 1e-9, `y=${pts[16][1]}`);
     assert.equal(pts[0][1], 50);
   });
 
@@ -506,7 +506,7 @@ test('Amos face waveform levels', async (t) => {
     assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(frame));
   });
 
-  await t.test('real frames redraw every tick and ease toward each new target', () => {
+  await t.test('real frames redraw at the 25 ms cap and ease toward each new target', () => {
     const raf = createFakeRaf();
     let now = 1000;
     const factory = createFakeStreamFactory();
@@ -519,18 +519,21 @@ test('Amos face waveform levels', async (t) => {
     const first = mouth.getAttribute('points');
     now = 1005;
     raf.run(now);
+    assert.equal(mouth.getAttribute('points'), first, 'tick inside 25 ms is skipped');
+    now = 1030;
+    raf.run(now);
     assert.equal(mouth.getAttribute('points'), first, 'same target, eased values hold');
     factory.streams[0].emit('frame', JSON.stringify(b));
-    // a sits at y 28 (clamped), b at y 72; after 11 ms the mouth has moved 1 - e^(-11/45) of the way
-    now = 1016;
+    // a sits at y 28 (clamped), b at y 72; 30 ms since the last drawn tick, tau 20 ms
+    now = 1060;
     raf.run(now);
-    const k = 1 - Math.exp(-11 / 45);
+    const k = 1 - Math.exp(-30 / 20);
     const y = parsePoints(mouth.getAttribute('points'))[0][1];
     assert.ok(Math.abs(y - (28 + 44 * k)) < 0.01, `eased y=${y}`);
     assert.notEqual(y, 72, 'does not jump to the new target');
   });
 
-  await t.test('a stale frame over 400 ms falls back to the procedural mouth', () => {
+  await t.test('after a fresh frame goes stale, drawn y values approach 50, not the procedural wave', () => {
     const raf = createFakeRaf();
     let now = 1000;
     const factory = createFakeStreamFactory();
@@ -541,9 +544,18 @@ test('Amos face waveform levels', async (t) => {
     now = 1400;
     raf.run(now);
     assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(new Array(33).fill(100)));
-    now = 1401;
+    // 400 ms is still fresh; from 1430 ms on the frame is stale and the mouth decays flat
+    now = 1430;
     raf.run(now);
-    assertPointsNear(parsePoints(mouth.getAttribute('points')), mouthPoints(1.401, 14));
+    const first = parsePoints(mouth.getAttribute('points'));
+    assert.ok(first.every(([, y]) => y > 28 && y < 50), `first stale tick moves toward 50: ${first[0][1]}`);
+    // decay tau is 120 ms: 22 * e^(-1600/120) is well under 0.01
+    for (let ms = 1460; ms <= 3000; ms += 30) {
+      now = ms;
+      raf.run(now);
+    }
+    const settled = parsePoints(mouth.getAttribute('points'));
+    for (const [, y] of settled) assert.ok(Math.abs(y - 50) < 0.01, `settled y=${y}`);
   });
 
   await t.test('a malformed payload is ignored', () => {
@@ -566,15 +578,15 @@ test('Amos face waveform levels', async (t) => {
 });
 
 test('Amos face smoothing and easing helpers', async (t) => {
-  await t.test('smoothValues keeps length, spreads a lone spike and ends below 50', () => {
+  await t.test('smoothValues keeps length and spreads a lone spike one step (single pass)', () => {
     const v = new Array(33).fill(0);
     v[16] = 100;
     const out = smoothValues(v);
     assert.equal(out.length, 33);
-    assert.ok(out[16] < 50, `centre ${out[16]}`);
-    assert.ok(Math.abs(out[16] - 37.5) < 1e-9, `centre ${out[16]}`);
-    assert.ok(out[15] > 0 && out[17] > 0, 'immediate neighbours get energy');
-    assert.ok(out[14] > 0 && out[18] > 0, 'energy reaches two steps out');
+    assert.ok(Math.abs(out[16] - 50) < 1e-9, `centre ${out[16]}`);
+    assert.ok(Math.abs(out[15] - 25) < 1e-9 && Math.abs(out[17] - 25) < 1e-9, 'immediate neighbours get 25');
+    assert.equal(out[14], 0, 'energy does not reach two steps out after one pass');
+    assert.equal(out[18], 0, 'energy does not reach two steps out after one pass');
   });
 
   await t.test('smoothValues leaves an all-equal frame unchanged', () => {
@@ -611,8 +623,8 @@ test('Amos face smoothing and easing helpers', async (t) => {
     assert.ok(Math.abs(y - 100 * (1 - Math.exp(-100 / 45))) < 1e-9);
   });
 
-  await t.test('easeToward uses tauMs 45 by default', () => {
-    const [y] = easeToward([0], [100], 45);
+  await t.test('easeToward uses tauMs 20 by default', () => {
+    const [y] = easeToward([0], [100], 20);
     assert.ok(Math.abs(y - 100 * (1 - Math.exp(-1))) < 1e-9, `y=${y}`);
   });
 
@@ -645,7 +657,7 @@ test('Amos face speaking eases toward real levels', async (t) => {
     stream.emit('frame', JSON.stringify(new Array(33).fill(100)));
     const amps = [];
     for (let i = 0; i < 6; i += 1) {
-      now += 16;
+      now += 30; // each tick clears the 25 ms draw cap
       raf.run(now);
       amps.push(50 - parsePoints(mouth.getAttribute('points'))[0][1]);
     }
