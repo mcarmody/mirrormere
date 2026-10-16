@@ -290,7 +290,16 @@
     noteConvo(data) {
       if (!this.convo || !data) return;
       this.add('you', data.transcript);
-      this.add('amos', data.reply);
+      // The reply streams in: successive voice.state events grow the same AMOS line
+      // instead of adding a new row for each update.
+      if (typeof data.reply === 'string' && data.reply.trim()) {
+        const lastMsg = this.convoLog[this.convoLog.length - 1];
+        if (lastMsg && lastMsg.who === 'amos') {
+          lastMsg.text = data.reply.trim();
+        } else {
+          this.add('amos', data.reply);
+        }
+      }
       this.renderConvo();
     }
 
@@ -408,6 +417,8 @@
     /** Applies the face for a state: stage data-state, mouth, and the speaking loop. */
     applyStage(key) {
       if (!this.stage) return;
+      // Streamed reply updates arrive as repeated speaking states; keep the running loop.
+      if (key === 'speaking' && this.stage.dataset.state === 'speaking' && this.looping) return;
       this.stage.dataset.state = key;
       this.stopLoop();
       if (key !== 'speaking') {

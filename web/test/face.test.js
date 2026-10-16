@@ -457,6 +457,48 @@ test('Amos face conversation log', async (t) => {
       ['message 2', 'message 3', 'message 4', 'message 5'],
     );
   });
+
+  await t.test('a streamed reply grows one AMOS row to the latest text', () => {
+    const { doc, sseClient } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: 'what time is it' });
+    handler({ state: 'speaking', reply: 'Quarter' });
+    handler({ state: 'speaking', reply: 'Quarter to nine.' });
+    assert.deepEqual(rowsOf(convoOf(doc)), [
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'what time is it' },
+      { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'Quarter to nine.' },
+    ]);
+  });
+
+  await t.test('a transcript after a reply starts a new YOU row and the next reply a new AMOS row', () => {
+    const { doc, sseClient } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: 'first question' });
+    handler({ state: 'speaking', reply: 'First answer.' });
+    handler({ state: 'thinking', transcript: 'second question' });
+    handler({ state: 'speaking', reply: 'Second answer.' });
+    assert.deepEqual(rowsOf(convoOf(doc)), [
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'first question' },
+      { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'First answer.' },
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'second question' },
+      { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'Second answer.' },
+    ]);
+  });
+
+  await t.test('repeated speaking state during a streamed reply does not restart the loop', () => {
+    const raf = createFakeRaf();
+    const { stage, sseClient } = mountStage({ raf });
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'speaking', reply: 'Quarter' });
+    assert.equal(stage.dataset.state, 'speaking');
+    assert.equal(raf.queue.length, 1, 'loop running');
+    const cancelledBefore = raf.cancelled.length;
+    handler({ state: 'speaking', reply: 'Quarter to nine.' });
+    handler({ state: 'speaking', reply: 'Quarter to nine. Anything else?' });
+    assert.equal(raf.cancelled.length, cancelledBefore, 'no raf cancel');
+    assert.equal(raf.queue.length, 1, 'still one pending frame');
+    assert.equal(stage.dataset.state, 'speaking');
+  });
 });
 
 function createFakeStreamFactory() {
