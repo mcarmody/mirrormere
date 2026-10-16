@@ -265,6 +265,14 @@
       stage.appendChild(svg);
       doc.body.appendChild(stage);
 
+      // The transcript moves out of the header into the face line, beside the
+      // waveform. Guarded: minimal test doubles may lack getElementById.
+      const transcript = typeof doc.getElementById === 'function' ? doc.getElementById('voice-transcript') : null;
+      if (transcript && transcript.parentNode && transcript.parentNode !== doc.body && transcript.classList) {
+        transcript.classList.add('face-line');
+        doc.body.appendChild(transcript);
+      }
+
       this.stage = stage;
       this.ring = ring;
       this.mouth = mouth;

@@ -699,3 +699,43 @@ test('Amos face speaking eases toward real levels', async (t) => {
     assert.equal(controller.shownY, null);
   });
 });
+
+test('Amos face stage moves the voice transcript into the face line', async (t) => {
+  function mountWithTranscript({ transcript, withLookup = true } = {}) {
+    const doc = createSvgMockDocument();
+    if (withLookup) {
+      doc.getElementById = (id) => (id === 'voice-transcript' ? transcript : null);
+    }
+    const ctl = withSearch('?face=1', () => new FaceController({ document: doc, sseClient: null }));
+    return { ctl, doc };
+  }
+
+  await t.test('moves #voice-transcript from the header to body and adds face-line', () => {
+    const header = createMockElement('div');
+    const transcript = createMockElement('div');
+    transcript.id = 'voice-transcript';
+    const classes = new Set();
+    transcript.classList = {
+      add(name) { classes.add(name); },
+      contains(name) { return classes.has(name); },
+    };
+    header.appendChild(transcript);
+    assert.equal(transcript.parentNode, header);
+
+    const { ctl, doc } = mountWithTranscript({ transcript });
+    assert.equal(transcript.parentNode, doc.body);
+    assert.ok(doc.body.children.includes(transcript), 'transcript is a body child');
+    assert.ok(transcript.classList.contains('face-line'), 'face-line class added');
+    assert.ok(ctl.stage, 'stage still mounted');
+  });
+
+  await t.test('mounting with no #voice-transcript does not throw', () => {
+    const { ctl, doc } = mountWithTranscript({ transcript: null });
+    assert.ok(ctl.stage, 'stage mounted');
+    assert.ok(doc.body.children.some((c) => c.id === 'amos-face-stage'), 'stage in body');
+    assert.equal(doc.body.children.some((c) => c.classList), false, 'no transcript moved');
+
+    const noLookup = mountWithTranscript({ withLookup: false });
+    assert.ok(noLookup.ctl.stage, 'stage mounted without getElementById');
+  });
+});
