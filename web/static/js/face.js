@@ -26,8 +26,10 @@
   const FRAME_MS = 33;
   const LEVELS_URL = 'http://127.0.0.1:8765/levels';
   const LEVEL_STALE_MS = 400;
-  const LEVEL_GAIN = 3.2;
+  const LEVEL_GAIN = 2.2;
   const LEVEL_SPAN = 22;
+  const EASE_TAU_MS = 45;
+  const EASE_MAX_DT_MS = 100;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
@@ -59,19 +61,56 @@
   }
 
   /**
-   * Maps 33 waveform levels (-100..100, from the ear daemon's /levels stream) to mouth points.
-   * gain scales the level before clamping to the mouth span.
+   * Spatial smoothing for a 33-value level frame: two passes of the kernel [1, 2, 1] / 4.
+   * Edge values reuse themselves as the missing neighbour. Returns a new array; input is not mutated.
    * @param {number[]} values
-   * @param {number} [gain=3.2]
+   * @returns {number[]}
+   */
+  function smoothValues(values) {
+    const pass = (src) => {
+      const last = src.length - 1;
+      const out = new Array(src.length);
+      for (let i = 0; i <= last; i += 1) {
+        const left = src[i > 0 ? i - 1 : 0];
+        const right = src[i < last ? i + 1 : last];
+        out[i] = (left + 2 * src[i] + right) / 4;
+      }
+      return out;
+    };
+    return pass(pass(values));
+  }
+
+  /**
+   * Maps 33 waveform levels (-100..100, from the ear daemon's /levels stream) to mouth points.
+   * Values are smoothed first; gain scales the level before clamping to the mouth span.
+   * @param {number[]} values
+   * @param {number} [gain=2.2]
    * @returns {Array<[number, number]>}
    */
   function framePoints(values, gain = LEVEL_GAIN) {
+    const smoothed = smoothValues(values);
     const points = [];
     for (let i = 0; i < MOUTH_POINTS; i += 1) {
-      const level = clamp((values[i] / 100) * gain, -1, 1);
+      const level = clamp((smoothed[i] / 100) * gain, -1, 1);
       points.push([MOUTH_X0 + i * MOUTH_STEP, 50 - level * LEVEL_SPAN]);
     }
     return points;
+  }
+
+  /**
+   * Exponential approach from current toward target, one step per frame.
+   * dtMs is clamped to 0..100. A null current, or one of a different length, returns a copy of target.
+   * @param {number[]|null} current
+   * @param {number[]} target
+   * @param {number} dtMs
+   * @param {number} [tauMs=45]
+   * @returns {number[]}
+   */
+  function easeToward(current, target, dtMs, tauMs = EASE_TAU_MS) {
+    if (!Array.isArray(current) || current.length !== target.length) return target.slice();
+    const dt = Number.isFinite(dtMs) ? clamp(dtMs, 0, EASE_MAX_DT_MS) : 0;
+    const k = 1 - Math.exp(-dt / tauMs);
+    return target.map((t, i) => current[i] + (t - current[i]) * k);
   }
 
   function clamp(v, lo, hi) {
@@ -157,9 +196,9 @@
       this.clock = options.clock || defaultClock;
       this.levelFrame = null;
       this.levelAt = null;
-      this.levelSeq = 0;
-      this.drawnSeq = 0;
       this.levelSource = null;
+      this.shownY = null; // eased mouth y values, one per point; null outside speaking
+      this.lastTick = null;
 
       if (!hasFaceParam() || !this.document) return;
 
@@ -265,7 +304,6 @@
       if (!isLevelFrame(values)) return;
       this.levelFrame = values;
       this.levelAt = this.clock();
-      this.levelSeq += 1;
     }
 
     /** True when a level frame arrived within the last 400 ms. */
@@ -274,25 +312,28 @@
     }
 
     /**
-     * Starts the speaking loop. Real level frames drive the mouth whenever one is fresh
-     * (redrawn only when a new frame arrived); otherwise the procedural mouth runs at 30 fps.
+     * Starts the speaking loop. While a level frame is fresh, every tick eases the mouth's y values
+     * toward the frame's target (no throttle); otherwise the procedural mouth runs at 30 fps.
      * No-op without a raf or while already running.
      */
     startLoop() {
       if (!this.raf || this.looping) return;
       this.looping = true;
       this.lastFrame = null;
+      this.lastTick = null;
       const tick = (now) => {
         if (!this.looping) return;
         this.rafId = this.raf(tick);
+        const dt = this.lastTick === null ? 0 : now - this.lastTick;
+        this.lastTick = now;
         if (this.hasFreshLevels()) {
-          if (this.levelSeq !== this.drawnSeq) {
-            this.drawMouth(framePoints(this.levelFrame));
-            this.drawnSeq = this.levelSeq;
-          }
+          const target = framePoints(this.levelFrame);
+          this.shownY = easeToward(this.shownY, target.map(([, y]) => y), dt);
+          this.drawMouth(target.map(([x], i) => [x, this.shownY[i]]));
           this.lastFrame = null;
           return;
         }
+        this.shownY = null;
         if (this.lastFrame !== null && now - this.lastFrame < FRAME_MS) return;
         this.lastFrame = now;
         this.drawMouth(mouthPoints(now / 1000, MOUTH_AMP));
@@ -305,6 +346,7 @@
       this.looping = false;
       this.rafId = null;
       this.lastFrame = null;
+      this.lastTick = null;
     }
 
     /** Applies the face for a state: stage data-state, mouth, and the speaking loop. */
@@ -312,7 +354,10 @@
       if (!this.stage) return;
       this.stage.dataset.state = key;
       this.stopLoop();
-      if (key !== 'speaking') this.levelAt = null; // a new turn starts without stale levels
+      if (key !== 'speaking') {
+        this.levelAt = null; // a new turn starts without stale levels
+        this.shownY = null;
+      }
       if (key === 'speaking') {
         if (this.reducedMotion) {
           this.drawMouth(mouthPoints(REDUCED_T, REDUCED_AMP));
@@ -363,6 +408,8 @@
       WORDS,
       mouthPoints,
       framePoints,
+      smoothValues,
+      easeToward,
     };
   }
   if (typeof module !== 'undefined' && module.exports) {
@@ -371,6 +418,8 @@
       WORDS,
       mouthPoints,
       framePoints,
+      smoothValues,
+      easeToward,
     };
   }
 })();

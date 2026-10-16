@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { FaceController, WORDS, mouthPoints, framePoints } = require('../static/js/face.js');
+const {
+  FaceController, WORDS, mouthPoints, framePoints, smoothValues, easeToward,
+} = require('../static/js/face.js');
 
 /**
  * Lightweight mock DOM element for hermetic Node.js testing.
@@ -444,6 +446,20 @@ test('Amos face waveform levels', async (t) => {
     for (const [, y] of framePoints(new Array(33).fill(-100))) assert.ok(Math.abs(y - 72) < 1e-9, `y=${y}`);
   });
 
+  await t.test('framePoints default gain is 2.2: a level of 25 maps to y 37.9', () => {
+    // 25/100 * 2.2 = 0.55, span 22: 50 - 0.55 * 22 = 37.9 (the old 3.2 gain gave 32.4)
+    for (const [, y] of framePoints(new Array(33).fill(25))) assert.ok(Math.abs(y - 37.9) < 1e-9, `y=${y}`);
+  });
+
+  await t.test('framePoints smooths a lone spike before mapping it', () => {
+    const spike = new Array(33).fill(0);
+    spike[16] = 100;
+    const pts = framePoints(spike);
+    // smoothed centre is 37.5, scaled 0.825, so y = 50 - 0.825 * 22 = 31.85; unsmoothed would clamp to y 28
+    assert.ok(Math.abs(pts[16][1] - 31.85) < 1e-9, `y=${pts[16][1]}`);
+    assert.equal(pts[0][1], 50);
+  });
+
   await t.test('framePoints clamps the scaled level to the mouth span', () => {
     const loud = framePoints(new Array(33).fill(100), 10);
     const max = framePoints(new Array(33).fill(100), 3.2);
@@ -490,7 +506,7 @@ test('Amos face waveform levels', async (t) => {
     assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(frame));
   });
 
-  await t.test('real frames redraw without the 33 ms throttle and only on new frames', () => {
+  await t.test('real frames redraw every tick and ease toward each new target', () => {
     const raf = createFakeRaf();
     let now = 1000;
     const factory = createFakeStreamFactory();
@@ -503,10 +519,15 @@ test('Amos face waveform levels', async (t) => {
     const first = mouth.getAttribute('points');
     now = 1005;
     raf.run(now);
-    assert.equal(mouth.getAttribute('points'), first, 'no new frame, no redraw');
+    assert.equal(mouth.getAttribute('points'), first, 'same target, eased values hold');
     factory.streams[0].emit('frame', JSON.stringify(b));
+    // a sits at y 28 (clamped), b at y 72; after 11 ms the mouth has moved 1 - e^(-11/45) of the way
+    now = 1016;
     raf.run(now);
-    assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(b));
+    const k = 1 - Math.exp(-11 / 45);
+    const y = parsePoints(mouth.getAttribute('points'))[0][1];
+    assert.ok(Math.abs(y - (28 + 44 * k)) < 0.01, `eased y=${y}`);
+    assert.notEqual(y, 72, 'does not jump to the new target');
   });
 
   await t.test('a stale frame over 400 ms falls back to the procedural mouth', () => {
@@ -541,5 +562,112 @@ test('Amos face waveform levels', async (t) => {
     assert.equal(controller.levelFrame, null);
     raf.run(now);
     assertPointsNear(parsePoints(mouth.getAttribute('points')), mouthPoints(1.0, 14));
+  });
+});
+
+test('Amos face smoothing and easing helpers', async (t) => {
+  await t.test('smoothValues keeps length, spreads a lone spike and ends below 50', () => {
+    const v = new Array(33).fill(0);
+    v[16] = 100;
+    const out = smoothValues(v);
+    assert.equal(out.length, 33);
+    assert.ok(out[16] < 50, `centre ${out[16]}`);
+    assert.ok(Math.abs(out[16] - 37.5) < 1e-9, `centre ${out[16]}`);
+    assert.ok(out[15] > 0 && out[17] > 0, 'immediate neighbours get energy');
+    assert.ok(out[14] > 0 && out[18] > 0, 'energy reaches two steps out');
+  });
+
+  await t.test('smoothValues leaves an all-equal frame unchanged', () => {
+    const v = new Array(33).fill(42);
+    assert.deepEqual(smoothValues(v), v);
+  });
+
+  await t.test('smoothValues does not mutate its input', () => {
+    const v = Array.from({ length: 33 }, (_, i) => i * 3 - 40);
+    const copy = v.slice();
+    const out = smoothValues(v);
+    assert.deepEqual(v, copy);
+    assert.notStrictEqual(out, v);
+  });
+
+  await t.test('easeToward with a null current returns a copy of target', () => {
+    const target = [1, 2, 3];
+    const out = easeToward(null, target, 16);
+    assert.deepEqual(out, target);
+    assert.notStrictEqual(out, target);
+  });
+
+  await t.test('easeToward with a different length returns a copy of target', () => {
+    assert.deepEqual(easeToward([0], [1, 2, 3], 16), [1, 2, 3]);
+  });
+
+  await t.test('easeToward with dtMs 0 returns current', () => {
+    assert.deepEqual(easeToward([10, 20], [50, 60], 0), [10, 20]);
+  });
+
+  await t.test('easeToward with dtMs 100 and tauMs 45 moves more than 85% of the way', () => {
+    const [y] = easeToward([0], [100], 100, 45);
+    assert.ok(y > 85, `moved ${y}`);
+    assert.ok(Math.abs(y - 100 * (1 - Math.exp(-100 / 45))) < 1e-9);
+  });
+
+  await t.test('easeToward uses tauMs 45 by default', () => {
+    const [y] = easeToward([0], [100], 45);
+    assert.ok(Math.abs(y - 100 * (1 - Math.exp(-1))) < 1e-9, `y=${y}`);
+  });
+
+  await t.test('easeToward clamps negative dtMs to 0 and dtMs above 100 to 100', () => {
+    assert.deepEqual(easeToward([10], [50], -50), [10]);
+    assert.deepEqual(easeToward([0], [100], 1000), easeToward([0], [100], 100));
+  });
+
+  await t.test('easeToward does not mutate its inputs', () => {
+    const current = [0, 10];
+    const target = [100, 110];
+    easeToward(current, target, 16);
+    assert.deepEqual(current, [0, 10]);
+    assert.deepEqual(target, [100, 110]);
+  });
+});
+
+test('Amos face speaking eases toward real levels', async (t) => {
+  await t.test('a step from silence to full level rises over successive ticks', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller, mouth } = mountLevels({ raf, factory, clock: () => now });
+    const stream = factory.streams[0];
+    controller.setState('speaking');
+    stream.emit('frame', JSON.stringify(new Array(33).fill(0)));
+    raf.run(now);
+    assert.equal(parsePoints(mouth.getAttribute('points'))[0][1], 50);
+
+    stream.emit('frame', JSON.stringify(new Array(33).fill(100)));
+    const amps = [];
+    for (let i = 0; i < 6; i += 1) {
+      now += 16;
+      raf.run(now);
+      amps.push(50 - parsePoints(mouth.getAttribute('points'))[0][1]);
+    }
+    assert.ok(amps[0] > 0 && amps[0] < 22 * 0.9, `first tick is partial: ${amps[0]}`);
+    for (let i = 1; i < amps.length; i += 1) {
+      assert.ok(amps[i] > amps[i - 1], `strictly rising at tick ${i}: ${amps}`);
+    }
+    assert.ok(amps[5] <= 22 + 1e-9, `never overshoots: ${amps[5]}`);
+  });
+
+  await t.test('leaving speaking resets shownY', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller } = mountLevels({ raf, factory, clock: () => now });
+    controller.setState('speaking');
+    factory.streams[0].emit('frame', JSON.stringify(new Array(33).fill(100)));
+    raf.run(now);
+    assert.ok(Array.isArray(controller.shownY), 'shownY set while speaking');
+    now += 16;
+    raf.run(now);
+    controller.setState('listening');
+    assert.equal(controller.shownY, null);
   });
 });
