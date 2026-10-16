@@ -30,6 +30,7 @@
   const EASE_MAX_DT_MS = 100;
   const DECAY_TAU_MS = 120;
   const DRAW_MIN_MS = 25;
+  const CONVO_MAX = 4;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
@@ -198,6 +199,8 @@
       this.levelSource = null;
       this.shownY = null; // eased mouth y values, one per point; null outside speaking
       this.lastTick = null;
+      this.convo = null; // conversation log element, set by mountStage
+      this.convoLog = [];
 
       if (!hasFaceParam() || !this.document) return;
 
@@ -224,6 +227,7 @@
 
       if (this.sseClient && typeof this.sseClient.on === 'function') {
         this.sseClient.on('voice.state', (data) => {
+          this.noteConvo(data);
           this.setState(data && data.state);
         });
       }
@@ -264,6 +268,15 @@
       svg.appendChild(mouth);
       stage.appendChild(svg);
       doc.body.appendChild(stage);
+
+      // Conversation log, left of the face: last few YOU/AMOS lines.
+      const convo = doc.createElement('div');
+      convo.id = 'amos-face-convo';
+      convo.className = 'amos-face-convo';
+      convo.setAttribute('aria-hidden', 'true');
+      doc.body.appendChild(convo);
+      this.convo = convo;
+      this.convoLog = [];
 
       this.stage = stage;
       this.ring = ring;
@@ -394,6 +407,56 @@
       if (this.resetTimer !== null) {
         clearTimeout(this.resetTimer);
         this.resetTimer = null;
+      }
+    }
+
+    /**
+     * Feeds a voice.state payload into the conversation log: the user's
+     * transcript first, then Amos's reply. Missing fields are skipped.
+     * @param {object} data voice.state payload
+     */
+    noteConvo(data) {
+      if (!this.convo || !data) return;
+      this.add('you', data.transcript);
+      this.add('amos', data.reply);
+      this.renderConvo();
+    }
+
+    /**
+     * Appends one message, keeping only the last CONVO_MAX. Blank or
+     * non-string text is ignored, as is text repeating the last message from
+     * the same speaker.
+     * @param {string} who 'you' or 'amos'
+     * @param {*} text
+     */
+    add(who, text) {
+      if (typeof text !== 'string' || text.trim() === '') return;
+      const trimmed = text.trim();
+      for (let i = this.convoLog.length - 1; i >= 0; i -= 1) {
+        if (this.convoLog[i].who === who) {
+          if (this.convoLog[i].text === trimmed) return;
+          break;
+        }
+      }
+      this.convoLog.push({ who, text: trimmed });
+      while (this.convoLog.length > CONVO_MAX) this.convoLog.shift();
+    }
+
+    renderConvo() {
+      if (!this.convo) return;
+      this.convo.textContent = '';
+      for (const msg of this.convoLog) {
+        const row = this.document.createElement('div');
+        row.className = `af-msg af-msg-${msg.who}`;
+        const who = this.document.createElement('span');
+        who.className = 'af-msg-who';
+        who.textContent = msg.who === 'you' ? 'YOU' : 'AMOS';
+        const text = this.document.createElement('span');
+        text.className = 'af-msg-text';
+        text.textContent = msg.text;
+        row.appendChild(who);
+        row.appendChild(text);
+        this.convo.appendChild(row);
       }
     }
   }
