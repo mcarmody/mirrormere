@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { FaceController, WORDS, mouthPoints } = require('../static/js/face.js');
+const { FaceController, WORDS, mouthPoints, framePoints } = require('../static/js/face.js');
 
 /**
  * Lightweight mock DOM element for hermetic Node.js testing.
@@ -263,7 +263,9 @@ function createFakeRaf() {
   return raf;
 }
 
-function mountStage({ search = '?face=1', raf, prefersReducedMotion = false } = {}) {
+function mountStage({
+  search = '?face=1', raf, prefersReducedMotion = false, eventSourceFactory, clock,
+} = {}) {
   const doc = createSvgMockDocument();
   const sseClient = {
     handlers: new Map(),
@@ -275,6 +277,8 @@ function mountStage({ search = '?face=1', raf, prefersReducedMotion = false } = 
     raf: raf ? raf.request : undefined,
     caf: raf ? raf.cancel : undefined,
     prefersReducedMotion,
+    eventSourceFactory,
+    clock,
   }));
   const stage = doc.body.children.find((c) => c.id === 'amos-face-stage');
   const svg = stage ? stage.children[0] : null;
@@ -381,5 +385,168 @@ test('Amos face stage', async (t) => {
     const pts = parsePoints(mouth.getAttribute('points'));
     const dev = Math.max(...pts.map(([, y]) => Math.abs(y - 50)));
     assert.ok(dev > 0 && dev <= 6 + 0.01, `static deviation ${dev}`);
+  });
+});
+
+/**
+ * Fake EventSource factory: records opened urls and lets the test emit events.
+ */
+function createFakeEventSource() {
+  const fake = {
+    urls: [],
+    listeners: new Map(),
+    factory(url) {
+      fake.urls.push(url);
+      return {
+        addEventListener(type, fn) { fake.listeners.set(type, fn); },
+      };
+    },
+    emit(type, data) { fake.listeners.get(type)({ data }); },
+  };
+  return fake;
+}
+
+test('Amos face real-audio waveform', async (t) => {
+  const loud = Array.from({ length: 33 }, (_, i) => (i % 2 === 0 ? 40 : -40));
+
+  await t.test('framePoints returns 33 points on the mouth x grid', () => {
+    const pts = framePoints(new Array(33).fill(0));
+    assert.equal(pts.length, 33);
+    assert.equal(pts[0][0], 20);
+    assert.ok(Math.abs(pts[32][0] - 80) < 1e-9);
+    assert.deepEqual(pts.map((p) => p[0]), mouthPoints(0, 0).map((p) => p[0]));
+  });
+
+  await t.test('framePoints maps zero, +100 and -100 to y 50, 28 and 72', () => {
+    assert.ok(framePoints(new Array(33).fill(0)).every(([, y]) => y === 50));
+    assert.ok(framePoints(new Array(33).fill(100)).every(([, y]) => Math.abs(y - 28) < 1e-9));
+    assert.ok(framePoints(new Array(33).fill(-100)).every(([, y]) => Math.abs(y - 72) < 1e-9));
+  });
+
+  await t.test('framePoints gain scales then clamps', () => {
+    assert.ok(Math.abs(framePoints(new Array(33).fill(10))[0][1] - (50 - 0.32 * 22)) < 1e-9);
+    assert.ok(Math.abs(framePoints(new Array(33).fill(10), 1)[0][1] - (50 - 0.1 * 22)) < 1e-9);
+    assert.ok(framePoints(new Array(33).fill(50), 10).every(([, y]) => Math.abs(y - 28) < 1e-9));
+    assert.ok(framePoints(new Array(33).fill(-50), 10).every(([, y]) => Math.abs(y - 72) < 1e-9));
+  });
+
+  await t.test('opens the default stream once with face=1', () => {
+    const es = createFakeEventSource();
+    mountStage({ eventSourceFactory: es.factory });
+    assert.deepEqual(es.urls, ['http://127.0.0.1:8765/levels']);
+    assert.equal(typeof es.listeners.get('frame'), 'function');
+  });
+
+  await t.test('opens no stream without face=1', () => {
+    const es = createFakeEventSource();
+    mountStage({ search: '?face=0', eventSourceFactory: es.factory });
+    mountStage({ search: '', eventSourceFactory: es.factory });
+    assert.deepEqual(es.urls, []);
+  });
+
+  await t.test('no stream when there is no EventSource', () => {
+    const { controller } = mountStage();
+    assert.equal(controller.levels, null);
+  });
+
+  await t.test('a frame while speaking draws framePoints, once per frame', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    let t0 = 5000;
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => t0 });
+    controller.setState('speaking');
+    es.emit('frame', JSON.stringify(loud));
+    raf.run(5001);
+    const expected = framePoints(loud).map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    assert.equal(mouth.getAttribute('points'), expected);
+
+    // No new frame: nothing redrawn, even past 33 ms.
+    mouth.setAttribute('points', 'sentinel');
+    t0 += 100;
+    raf.run(5101);
+    assert.equal(mouth.getAttribute('points'), 'sentinel');
+
+    // New frame, drawn on the very next tick without the 30 fps throttle.
+    es.emit('frame', JSON.stringify(loud));
+    raf.run(5102);
+    assert.equal(mouth.getAttribute('points'), expected);
+  });
+
+  await t.test('a stale frame falls back to the procedural mouth', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    let t0 = 5000;
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => t0 });
+    controller.setState('speaking');
+    es.emit('frame', JSON.stringify(loud));
+    t0 += 401;
+    raf.run(6000);
+    const expected = mouthPoints(6, 14).map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    assert.equal(mouth.getAttribute('points'), expected);
+  });
+
+  await t.test('a frame exactly 400 ms old is still used', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    let t0 = 5000;
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => t0 });
+    controller.setState('speaking');
+    es.emit('frame', JSON.stringify(loud));
+    t0 += 400;
+    raf.run(5400);
+    const expected = framePoints(loud).map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    assert.equal(mouth.getAttribute('points'), expected);
+  });
+
+  await t.test('malformed payloads are ignored', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => 5000 });
+    controller.setState('speaking');
+    es.emit('frame', 'not json');
+    es.emit('frame', '[1,2,3]');
+    es.emit('frame', JSON.stringify(new Array(33).fill('x')));
+    es.emit('frame', JSON.stringify({ a: 1 }));
+    es.emit('frame', undefined);
+    assert.equal(controller.levelFrame, null);
+    raf.run(5001);
+    const expected = mouthPoints(5.001, 14).map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    assert.equal(mouth.getAttribute('points'), expected);
+  });
+
+  await t.test('frames outside speaking do not draw, and leaving speaking flattens the mouth', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => 5000 });
+    es.emit('frame', JSON.stringify(loud));
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50);
+    controller.setState('speaking');
+    raf.run(5001);
+    assert.notEqual(parsePoints(mouth.getAttribute('points'))[1][1], 50);
+    controller.setState('idle');
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50);
+  });
+
+  await t.test('a silent frame draws a flat mouth', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    const { controller, mouth } = mountStage({ raf, eventSourceFactory: es.factory, clock: () => 5000 });
+    controller.setState('speaking');
+    es.emit('frame', JSON.stringify(new Array(33).fill(0)));
+    raf.run(5001);
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50);
+  });
+
+  await t.test('reduced motion ignores the stream', () => {
+    const raf = createFakeRaf();
+    const es = createFakeEventSource();
+    const { controller, mouth } = mountStage({
+      raf, eventSourceFactory: es.factory, clock: () => 5000, prefersReducedMotion: true,
+    });
+    controller.setState('speaking');
+    const before = mouth.getAttribute('points');
+    es.emit('frame', JSON.stringify(loud));
+    assert.equal(raf.queue.length, 0);
+    assert.equal(mouth.getAttribute('points'), before);
   });
 });
