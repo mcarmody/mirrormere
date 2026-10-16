@@ -199,8 +199,6 @@
       this.levelSource = null;
       this.shownY = null; // eased mouth y values, one per point; null outside speaking
       this.lastTick = null;
-      this.convo = null; // conversation log element, set by mountStage
-      this.convoLog = [];
 
       if (!hasFaceParam() || !this.document) return;
 
