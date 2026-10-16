@@ -3128,7 +3128,7 @@ button, .touch-target {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .amos-face-stage .af-ring {
+  .amos-face-stage[data-state] .af-ring {
     animation: none;
   }
 }
