@@ -3147,6 +3147,55 @@ body:has(.amos-face-stage) .grid-canvas {
   grid-template-rows: 1fr 24vh;
 }
 
+/* Conversation log, left of the face. Newest message sits lowest; older ones fade. */
+.amos-face-convo {
+  position: fixed;
+  right: calc(3vh + 22vh + 3vh);
+  bottom: 3vh;
+  width: 52vw;
+  height: 22vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 0.6vh;
+  overflow: hidden;
+  text-align: right;
+  font-size: 2.4vh;
+  line-height: 1.3;
+  z-index: 9000;
+  pointer-events: none;
+}
+
+.amos-face-convo .af-msg {
+  max-width: 100%;
+  color: var(--mm-text-primary);
+}
+
+.amos-face-convo .af-msg:not(:last-child) {
+  opacity: 0.55;
+}
+
+.amos-face-convo .af-msg-you {
+  font-style: italic;
+}
+
+.amos-face-convo .af-msg-who {
+  margin-right: 1vh;
+  font-size: 1.5vh;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--mm-text-secondary);
+}
+
+.amos-face-convo .af-msg-amos .af-msg-who {
+  color: #b58be0;
+}
+
+body:has(.amos-face-stage) .voice-toast-dock {
+  display: none;
+}
+
 body:has(.amos-face-stage) .grid-canvas > :not([data-dim-cols="2"]) {
   grid-row: 1 / 2 !important;
 }
