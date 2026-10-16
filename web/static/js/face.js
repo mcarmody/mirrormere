@@ -30,6 +30,7 @@
   const EASE_MAX_DT_MS = 100;
   const DECAY_TAU_MS = 120;
   const DRAW_MIN_MS = 25;
+  const CONVO_MAX = 4;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
@@ -177,6 +178,8 @@
       this.element = null;
       this.resetTimer = null;
       this.stage = null;
+      this.convo = null;
+      this.convoLog = [];
       this.mouth = null;
       this.ring = null;
       this.raf = options.raf || (typeof window !== 'undefined' && window.requestAnimationFrame
@@ -224,6 +227,7 @@
 
       if (this.sseClient && typeof this.sseClient.on === 'function') {
         this.sseClient.on('voice.state', (data) => {
+          this.noteConvo(data);
           this.setState(data && data.state);
         });
       }
@@ -265,6 +269,14 @@
       stage.appendChild(svg);
       doc.body.appendChild(stage);
 
+      const convo = doc.createElement('div');
+      convo.id = 'amos-face-convo';
+      convo.className = 'amos-face-convo';
+      convo.setAttribute('aria-hidden', 'true');
+      doc.body.appendChild(convo);
+      this.convo = convo;
+      this.convoLog = [];
+
       this.stage = stage;
       this.ring = ring;
       this.mouth = mouth;
@@ -273,6 +285,55 @@
 
     drawMouth(points) {
       if (this.mouth) this.mouth.setAttribute('points', formatPoints(points));
+    }
+
+    /**
+     * Records the transcript and reply carried by a voice.state event in the
+     * conversation log under the face row. No-op without the log element.
+     * @param {Object} data voice.state payload
+     */
+    noteConvo(data) {
+      if (!this.convo || !data) return;
+      this.add('you', data.transcript);
+      this.add('amos', data.reply);
+      this.renderConvo();
+    }
+
+    /**
+     * Appends one message. Ignores non-string or blank text, and text equal to
+     * the latest message from the same speaker (repeated events). Keeps the last CONVO_MAX.
+     * @param {'you'|'amos'} who
+     * @param {*} text
+     */
+    add(who, text) {
+      if (typeof text !== 'string' || text.trim() === '') return;
+      const trimmed = text.trim();
+      for (let i = this.convoLog.length - 1; i >= 0; i -= 1) {
+        if (this.convoLog[i].who === who) {
+          if (this.convoLog[i].text === trimmed) return;
+          break;
+        }
+      }
+      this.convoLog.push({ who, text: trimmed });
+      while (this.convoLog.length > CONVO_MAX) this.convoLog.shift();
+    }
+
+    renderConvo() {
+      if (!this.convo) return;
+      this.convo.textContent = '';
+      for (const msg of this.convoLog) {
+        const row = this.document.createElement('div');
+        row.className = 'af-msg af-msg-' + msg.who;
+        const who = this.document.createElement('span');
+        who.className = 'af-msg-who';
+        who.textContent = msg.who === 'you' ? 'YOU' : 'AMOS';
+        const text = this.document.createElement('span');
+        text.className = 'af-msg-text';
+        text.textContent = msg.text;
+        row.appendChild(who);
+        row.appendChild(text);
+        this.convo.appendChild(row);
+      }
     }
 
     /**

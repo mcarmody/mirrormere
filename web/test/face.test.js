@@ -13,14 +13,20 @@ const {
 function createMockElement(tagName = 'div') {
   const attributes = new Map();
   const children = [];
+  let text = '';
   return {
     tagName: tagName.toUpperCase(),
     id: '',
     className: '',
     dataset: {},
-    textContent: '',
     children,
     parentNode: null,
+    // As in a DOM, clearing textContent removes the child nodes.
+    get textContent() { return text; },
+    set textContent(value) {
+      text = String(value);
+      if (text === '') children.length = 0;
+    },
     setAttribute(name, value) { attributes.set(name, String(value)); },
     getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
     appendChild(child) {
@@ -697,5 +703,55 @@ test('Amos face speaking eases toward real levels', async (t) => {
     raf.run(now);
     controller.setState('listening');
     assert.equal(controller.shownY, null);
+  });
+});
+
+test('Amos conversation log under the face row', async (t) => {
+  function convoRows({ doc }) {
+    const convo = doc.body.children.find((c) => c.id === 'amos-face-convo');
+    assert.ok(convo, 'amos-face-convo present');
+    return convo.children.map((row) => ({
+      cls: row.className,
+      who: row.children[0].textContent,
+      text: row.children[1].textContent,
+    }));
+  }
+
+  await t.test('transcript then reply adds a YOU row then an AMOS row', () => {
+    const { sseClient, doc } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: 'what time is it' });
+    handler({ state: 'speaking', reply: 'Half past nine.' });
+    assert.deepEqual(convoRows({ doc }), [
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'what time is it' },
+      { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'Half past nine.' },
+    ]);
+  });
+
+  await t.test('repeating the same transcript adds no row', () => {
+    const { sseClient, doc } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: 'hello' });
+    handler({ state: 'thinking', transcript: 'hello' });
+    assert.equal(convoRows({ doc }).length, 1);
+  });
+
+  await t.test('five distinct messages keep only the last four', () => {
+    const { sseClient, doc } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    for (const word of ['one', 'two', 'three', 'four', 'five']) {
+      handler({ state: 'thinking', transcript: word });
+    }
+    assert.deepEqual(convoRows({ doc }).map((r) => r.text), ['two', 'three', 'four', 'five']);
+  });
+
+  await t.test('blank and non-string text is ignored; no log without face=1', () => {
+    const { sseClient, doc } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: '   ', reply: 42 });
+    assert.equal(convoRows({ doc }).length, 0);
+
+    const off = mountStage({ search: '?face=0' });
+    assert.equal(off.doc.body.children.length, 0);
   });
 });

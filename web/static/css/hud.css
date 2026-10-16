@@ -3062,11 +3062,61 @@ button, .touch-target {
 .amos-face-stage {
   position: fixed;
   right: 3vh;
-  bottom: 3vh;
-  width: 22vh;
-  height: 22vh;
+  bottom: calc(3vh + 19vh);
+  width: 14vh;
+  height: 14vh;
   z-index: 9000;
   pointer-events: none;
+}
+
+/* Conversation log: the bottom band under the face row. Last exchange only (see face.js CONVO_MAX). */
+.amos-face-convo {
+  position: fixed;
+  right: 3vh;
+  bottom: 3vh;
+  width: 56vw;
+  height: 17vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 0.6vh;
+  overflow: hidden;
+  text-align: right;
+  font-size: 2.1vh;
+  line-height: 1.3;
+  z-index: 9000;
+  pointer-events: none;
+}
+
+.amos-face-convo .af-msg {
+  max-width: 100%;
+  color: var(--mm-text-primary);
+}
+
+.amos-face-convo .af-msg:not(:last-child) {
+  opacity: 0.55;
+}
+
+.amos-face-convo .af-msg-you {
+  font-style: italic;
+}
+
+.amos-face-convo .af-msg-who {
+  margin-right: 1vh;
+  font-size: 1.5vh;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--mm-text-secondary);
+}
+
+.amos-face-convo .af-msg-amos .af-msg-who {
+  color: #b58be0;
+}
+
+/* The face row and the log replace the toast dock while the face is on. */
+body:has(.amos-face-stage) .voice-toast-dock {
+  display: none;
 }
 
 .amos-face-stage svg {
@@ -3142,9 +3192,9 @@ button, .touch-target {
   stroke: var(--mm-status-error);
 }
 
-/* The bottom-right 24vh square is reserved for the face. */
+/* The bottom 36vh band holds the face row over the conversation log; the grid keeps clear of it. */
 body:has(.amos-face-stage) .grid-canvas {
-  grid-template-rows: 1fr 24vh;
+  grid-template-rows: 1fr 36vh;
 }
 
 body:has(.amos-face-stage) .grid-canvas > :not([data-dim-cols="2"]) {
