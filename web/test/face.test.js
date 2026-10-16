@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { FaceController, WORDS, mouthPoints } = require('../static/js/face.js');
+const { FaceController, WORDS, mouthPoints, framePoints } = require('../static/js/face.js');
 
 /**
  * Lightweight mock DOM element for hermetic Node.js testing.
@@ -381,5 +381,165 @@ test('Amos face stage', async (t) => {
     const pts = parsePoints(mouth.getAttribute('points'));
     const dev = Math.max(...pts.map(([, y]) => Math.abs(y - 50)));
     assert.ok(dev > 0 && dev <= 6 + 0.01, `static deviation ${dev}`);
+  });
+});
+
+/**
+ * Fake EventSource factory. Each opened stream records its url and listeners;
+ * emit(type, data) delivers an event the way EventSource would.
+ */
+function createFakeStreamFactory() {
+  const streams = [];
+  const factory = (url) => {
+    const stream = {
+      url,
+      listeners: new Map(),
+      addEventListener(type, fn) { this.listeners.set(type, fn); },
+      emit(type, data) { this.listeners.get(type)({ data }); },
+    };
+    streams.push(stream);
+    return stream;
+  };
+  factory.streams = streams;
+  return factory;
+}
+
+function mountLevels({ raf, clock, factory, search = '?face=1' } = {}) {
+  const doc = createSvgMockDocument();
+  const controller = withSearch(search, () => new FaceController({
+    sseClient: null,
+    document: doc,
+    raf: raf.request,
+    caf: raf.cancel,
+    prefersReducedMotion: false,
+    eventSourceFactory: factory,
+    clock,
+  }));
+  const stage = doc.body.children.find((c) => c.id === 'amos-face-stage');
+  const mouth = stage
+    ? stage.children[0].children.find((c) => c.getAttribute('class') === 'af-mouth')
+    : null;
+  return { controller, mouth };
+}
+
+function assertPointsNear(actual, expected) {
+  assert.equal(actual.length, expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    assert.ok(Math.abs(actual[i][0] - expected[i][0]) < 0.01, `x at ${i}`);
+    assert.ok(Math.abs(actual[i][1] - expected[i][1]) < 0.01, `y at ${i}: ${actual[i][1]} vs ${expected[i][1]}`);
+  }
+}
+
+test('Amos face waveform levels', async (t) => {
+  await t.test('framePoints returns 33 points spanning x 20 to 80', () => {
+    const pts = framePoints(new Array(33).fill(0));
+    assert.equal(pts.length, 33);
+    assert.equal(pts[0][0], 20);
+    assert.ok(Math.abs(pts[32][0] - 80) < 1e-9);
+  });
+
+  await t.test('framePoints maps zero to y 50, 100 to y 28 and -100 to y 72', () => {
+    for (const [, y] of framePoints(new Array(33).fill(0))) assert.equal(y, 50);
+    for (const [, y] of framePoints(new Array(33).fill(100))) assert.ok(Math.abs(y - 28) < 1e-9, `y=${y}`);
+    for (const [, y] of framePoints(new Array(33).fill(-100))) assert.ok(Math.abs(y - 72) < 1e-9, `y=${y}`);
+  });
+
+  await t.test('framePoints clamps the scaled level to the mouth span', () => {
+    const loud = framePoints(new Array(33).fill(100), 10);
+    const max = framePoints(new Array(33).fill(100), 3.2);
+    assert.deepEqual(loud, max);
+    const half = framePoints(new Array(33).fill(100), 0.5);
+    assert.ok(Math.abs(half[0][1] - 39) < 1e-9, `half gain y=${half[0][1]}`);
+  });
+
+  await t.test('no stream is opened without face=1', () => {
+    const raf = createFakeRaf();
+    const off = createFakeStreamFactory();
+    mountLevels({ raf, factory: off, search: '?face=0' });
+    assert.equal(off.streams.length, 0);
+    mountLevels({ raf, factory: off, search: '' });
+    assert.equal(off.streams.length, 0);
+  });
+
+  await t.test('the stream opens once at the levels url', () => {
+    const raf = createFakeRaf();
+    const factory = createFakeStreamFactory();
+    mountLevels({ raf, factory, clock: () => 1000 });
+    assert.equal(factory.streams.length, 1);
+    assert.equal(factory.streams[0].url, 'http://127.0.0.1:8765/levels');
+  });
+
+  await t.test('a null factory disables the stream without error', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth } = mountLevels({ raf, factory: null, clock: () => 1000 });
+    controller.setState('speaking');
+    raf.run(1000);
+    assert.equal(controller.levelSource, null);
+    assert.ok(mouth.getAttribute('points'));
+  });
+
+  await t.test('a fresh frame during speaking sets the mouth to framePoints', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller, mouth } = mountLevels({ raf, factory, clock: () => now });
+    controller.setState('speaking');
+    const frame = Array.from({ length: 33 }, (_, i) => (i % 2 ? 100 : -50));
+    factory.streams[0].emit('frame', JSON.stringify(frame));
+    raf.run(now);
+    assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(frame));
+  });
+
+  await t.test('real frames redraw without the 33 ms throttle and only on new frames', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller, mouth } = mountLevels({ raf, factory, clock: () => now });
+    controller.setState('speaking');
+    const a = new Array(33).fill(80);
+    const b = new Array(33).fill(-80);
+    factory.streams[0].emit('frame', JSON.stringify(a));
+    raf.run(now);
+    const first = mouth.getAttribute('points');
+    now = 1005;
+    raf.run(now);
+    assert.equal(mouth.getAttribute('points'), first, 'no new frame, no redraw');
+    factory.streams[0].emit('frame', JSON.stringify(b));
+    raf.run(now);
+    assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(b));
+  });
+
+  await t.test('a stale frame over 400 ms falls back to the procedural mouth', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller, mouth } = mountLevels({ raf, factory, clock: () => now });
+    controller.setState('speaking');
+    factory.streams[0].emit('frame', JSON.stringify(new Array(33).fill(100)));
+    raf.run(now);
+    now = 1400;
+    raf.run(now);
+    assertPointsNear(parsePoints(mouth.getAttribute('points')), framePoints(new Array(33).fill(100)));
+    now = 1401;
+    raf.run(now);
+    assertPointsNear(parsePoints(mouth.getAttribute('points')), mouthPoints(1.401, 14));
+  });
+
+  await t.test('a malformed payload is ignored', () => {
+    const raf = createFakeRaf();
+    let now = 1000;
+    const factory = createFakeStreamFactory();
+    const { controller, mouth } = mountLevels({ raf, factory, clock: () => now });
+    controller.setState('speaking');
+    const stream = factory.streams[0];
+    stream.emit('frame', 'not json');
+    stream.emit('frame', '{"levels": 1}');
+    stream.emit('frame', JSON.stringify(new Array(32).fill(0)));
+    stream.emit('frame', JSON.stringify(new Array(33).fill('loud')));
+    stream.emit('frame', undefined);
+    assert.equal(controller.levelAt, null);
+    assert.equal(controller.levelFrame, null);
+    raf.run(now);
+    assertPointsNear(parsePoints(mouth.getAttribute('points')), mouthPoints(1.0, 14));
   });
 });

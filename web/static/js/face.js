@@ -24,6 +24,10 @@
   const REDUCED_AMP = 6;
   const REDUCED_T = 1;
   const FRAME_MS = 33;
+  const LEVELS_URL = 'http://127.0.0.1:8765/levels';
+  const LEVEL_STALE_MS = 400;
+  const LEVEL_GAIN = 3.2;
+  const LEVEL_SPAN = 22;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
@@ -52,6 +56,42 @@
       points.push([MOUTH_X0 + i * MOUTH_STEP, 50 + amp * envelope(i) * wave]);
     }
     return points;
+  }
+
+  /**
+   * Maps 33 waveform levels (-100..100, from the ear daemon's /levels stream) to mouth points.
+   * gain scales the level before clamping to the mouth span.
+   * @param {number[]} values
+   * @param {number} [gain=3.2]
+   * @returns {Array<[number, number]>}
+   */
+  function framePoints(values, gain = LEVEL_GAIN) {
+    const points = [];
+    for (let i = 0; i < MOUTH_POINTS; i += 1) {
+      const level = clamp((values[i] / 100) * gain, -1, 1);
+      points.push([MOUTH_X0 + i * MOUTH_STEP, 50 - level * LEVEL_SPAN]);
+    }
+    return points;
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function isLevelFrame(values) {
+    return Array.isArray(values)
+      && values.length === MOUTH_POINTS
+      && values.every((v) => typeof v === 'number' && Number.isFinite(v));
+  }
+
+  function defaultClock() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  function defaultEventSourceFactory() {
+    return typeof EventSource === 'function' ? (url) => new EventSource(url) : null;
   }
 
   /** Alternating zigzag used for the error state. */
@@ -88,6 +128,9 @@
      * @param {Function} [options.raf] requestAnimationFrame; defaults to window's
      * @param {Function} [options.caf] cancelAnimationFrame; defaults to window's
      * @param {boolean} [options.prefersReducedMotion] defaults to the media query
+     * @param {string} [options.levelsUrl] waveform SSE endpoint; defaults to the ear daemon on this Pi
+     * @param {Function|null} [options.eventSourceFactory] url => EventSource-like; null disables the stream
+     * @param {Function} [options.clock] milliseconds clock; defaults to performance.now
      */
     constructor(options = {}) {
       this.sseClient = options.sseClient || null;
@@ -107,6 +150,16 @@
       this.looping = false;
       this.rafId = null;
       this.lastFrame = null;
+      this.levelsUrl = options.levelsUrl || LEVELS_URL;
+      this.eventSourceFactory = options.eventSourceFactory !== undefined
+        ? options.eventSourceFactory
+        : defaultEventSourceFactory();
+      this.clock = options.clock || defaultClock;
+      this.levelFrame = null;
+      this.levelAt = null;
+      this.levelSeq = 0;
+      this.drawnSeq = 0;
+      this.levelSource = null;
 
       if (!hasFaceParam() || !this.document) return;
 
@@ -129,6 +182,7 @@
       this.element = el;
 
       this.mountStage();
+      if (this.stage) this.openLevels();
 
       if (this.sseClient && typeof this.sseClient.on === 'function') {
         this.sseClient.on('voice.state', (data) => {
@@ -183,7 +237,47 @@
       if (this.mouth) this.mouth.setAttribute('points', formatPoints(points));
     }
 
-    /** Starts the speaking loop at 30 fps. No-op without a raf or while already running. */
+    /**
+     * Opens the waveform stream once. EventSource reconnects by itself, so nothing
+     * else is needed here. No-op when no factory is available.
+     */
+    openLevels() {
+      if (!this.eventSourceFactory) return;
+      let source = null;
+      try {
+        source = this.eventSourceFactory(this.levelsUrl);
+      } catch (e) {
+        return;
+      }
+      if (!source || typeof source.addEventListener !== 'function') return;
+      source.addEventListener('frame', (e) => this.onLevelFrame(e));
+      this.levelSource = source;
+    }
+
+    /** Stores a valid 33-value frame; malformed payloads are ignored. */
+    onLevelFrame(e) {
+      let values = null;
+      try {
+        values = JSON.parse(e ? e.data : undefined);
+      } catch (err) {
+        return;
+      }
+      if (!isLevelFrame(values)) return;
+      this.levelFrame = values;
+      this.levelAt = this.clock();
+      this.levelSeq += 1;
+    }
+
+    /** True when a level frame arrived within the last 400 ms. */
+    hasFreshLevels() {
+      return this.levelAt !== null && this.clock() - this.levelAt <= LEVEL_STALE_MS;
+    }
+
+    /**
+     * Starts the speaking loop. Real level frames drive the mouth whenever one is fresh
+     * (redrawn only when a new frame arrived); otherwise the procedural mouth runs at 30 fps.
+     * No-op without a raf or while already running.
+     */
     startLoop() {
       if (!this.raf || this.looping) return;
       this.looping = true;
@@ -191,6 +285,14 @@
       const tick = (now) => {
         if (!this.looping) return;
         this.rafId = this.raf(tick);
+        if (this.hasFreshLevels()) {
+          if (this.levelSeq !== this.drawnSeq) {
+            this.drawMouth(framePoints(this.levelFrame));
+            this.drawnSeq = this.levelSeq;
+          }
+          this.lastFrame = null;
+          return;
+        }
         if (this.lastFrame !== null && now - this.lastFrame < FRAME_MS) return;
         this.lastFrame = now;
         this.drawMouth(mouthPoints(now / 1000, MOUTH_AMP));
@@ -210,6 +312,7 @@
       if (!this.stage) return;
       this.stage.dataset.state = key;
       this.stopLoop();
+      if (key !== 'speaking') this.levelAt = null; // a new turn starts without stale levels
       if (key === 'speaking') {
         if (this.reducedMotion) {
           this.drawMouth(mouthPoints(REDUCED_T, REDUCED_AMP));
@@ -259,6 +362,7 @@
       FaceController,
       WORDS,
       mouthPoints,
+      framePoints,
     };
   }
   if (typeof module !== 'undefined' && module.exports) {
@@ -266,6 +370,7 @@
       FaceController,
       WORDS,
       mouthPoints,
+      framePoints,
     };
   }
 })();
