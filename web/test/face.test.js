@@ -342,7 +342,7 @@ test('Amos face stage', async (t) => {
     assert.equal(raf.queue.length, 1, 'one frame queued');
     raf.run(1000);
     assert.equal(raf.queue.length, 1, 'loop re-queues itself');
-    assert.notEqual(parsePoints(mouth.getAttribute('points'))[16][1], 50, 'mouth moves while speaking');
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50, 'no level frame: flat mouth');
 
     controller.setState('listening');
     assert.equal(raf.queue.length, 0, 'loop cancelled');
@@ -350,16 +350,32 @@ test('Amos face stage', async (t) => {
     for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50);
   });
 
-  await t.test('frames closer than 33 ms are skipped', () => {
+  await t.test('speaking with no level frame ever received draws a flat line (all y equal 50)', () => {
     const raf = createFakeRaf();
     const { controller, mouth } = mountStage({ raf });
     controller.setState('speaking');
+    for (const now of [1000, 1100, 1300, 1600, 2000]) {
+      raf.run(now);
+      for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50, `flat at ${now} ms`);
+    }
+  });
+
+  await t.test('draws are capped at one per 25 ms', () => {
+    const raf = createFakeRaf();
+    const { controller, mouth } = mountStage({ raf });
+    let draws = 0;
+    const setAttribute = mouth.setAttribute.bind(mouth);
+    mouth.setAttribute = (name, value) => {
+      if (name === 'points') draws += 1;
+      setAttribute(name, value);
+    };
+    controller.setState('speaking');
     raf.run(1000);
-    const first = mouth.getAttribute('points');
+    const afterFirst = draws;
     raf.run(1010);
-    assert.equal(mouth.getAttribute('points'), first, 'no redraw inside 33 ms');
+    assert.equal(draws, afterFirst, 'no redraw inside 25 ms');
     raf.run(1100);
-    assert.notEqual(mouth.getAttribute('points'), first, 'redraw after 33 ms');
+    assert.equal(draws, afterFirst + 1, 'redraw after 25 ms');
   });
 
   await t.test('error draws the zigzag mouth', () => {
@@ -573,7 +589,7 @@ test('Amos face waveform levels', async (t) => {
     assert.equal(controller.levelAt, null);
     assert.equal(controller.levelFrame, null);
     raf.run(now);
-    assertPointsNear(parsePoints(mouth.getAttribute('points')), mouthPoints(1.0, 14));
+    for (const [, y] of parsePoints(mouth.getAttribute('points'))) assert.equal(y, 50, 'no valid frame: flat mouth');
   });
 });
 

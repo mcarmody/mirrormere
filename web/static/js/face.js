@@ -20,10 +20,8 @@
   const MOUTH_POINTS = 33;
   const MOUTH_X0 = 20;
   const MOUTH_STEP = 1.875;
-  const MOUTH_AMP = 14;
   const REDUCED_AMP = 6;
   const REDUCED_T = 1;
-  const FRAME_MS = 33;
   const LEVELS_URL = 'http://127.0.0.1:8765/levels';
   const LEVEL_STALE_MS = 400;
   const LEVEL_GAIN = 2.2;
@@ -190,7 +188,6 @@
         : defaultReducedMotion();
       this.looping = false;
       this.rafId = null;
-      this.lastFrame = null;
       this.levelsUrl = options.levelsUrl || LEVELS_URL;
       this.eventSourceFactory = options.eventSourceFactory !== undefined
         ? options.eventSourceFactory
@@ -315,13 +312,12 @@
 
     /**
      * Starts the speaking loop. While a level frame is fresh, every tick eases the mouth's y values
-     * toward the frame's target (no throttle); otherwise the procedural mouth runs at 30 fps.
+     * toward the frame's target; otherwise it eases the mouth flat toward y 50. No procedural wave.
      * No-op without a raf or while already running.
      */
     startLoop() {
       if (!this.raf || this.looping) return;
       this.looping = true;
-      this.lastFrame = null;
       this.lastTick = null;
       const tick = (now) => {
         if (!this.looping) return;
@@ -333,20 +329,11 @@
           const target = framePoints(this.levelFrame);
           this.shownY = easeToward(this.shownY, target.map(([, y]) => y), dt);
           this.drawMouth(target.map(([x], i) => [x, this.shownY[i]]));
-          this.lastFrame = null;
           return;
         }
-        if (this.levelAt !== null) {
-          // Levels were seen this turn and have gone stale: ease the mouth flat instead of the procedural wave.
-          const flat = new Array(MOUTH_POINTS).fill(50);
-          this.shownY = easeToward(this.shownY, flat, dt, DECAY_TAU_MS);
-          this.drawMouth(mouthPoints(0, 0).map(([x], i) => [x, this.shownY[i]]));
-          return;
-        }
-        this.shownY = null;
-        if (this.lastFrame !== null && now - this.lastFrame < FRAME_MS) return;
-        this.lastFrame = now;
-        this.drawMouth(mouthPoints(now / 1000, MOUTH_AMP));
+        const flat = new Array(MOUTH_POINTS).fill(50);
+        this.shownY = easeToward(this.shownY, flat, dt, DECAY_TAU_MS);
+        this.drawMouth(mouthPoints(0, 0).map(([x], i) => [x, this.shownY[i]]));
       };
       this.rafId = this.raf(tick);
     }
@@ -355,7 +342,6 @@
       if (this.looping && this.caf) this.caf(this.rafId);
       this.looping = false;
       this.rafId = null;
-      this.lastFrame = null;
       this.lastTick = null;
     }
 

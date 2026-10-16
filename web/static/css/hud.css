@@ -3095,17 +3095,22 @@ button, .touch-target {
 }
 
 .amos-face-stage[data-state="transcribing"] .af-ring {
-  stroke-dasharray: 20 8;
-  animation: af-spin 3s linear infinite;
+  stroke-dasharray: 3 9;
+  animation: af-spin 12s linear infinite;
 }
 
 .amos-face-stage[data-state="thinking"] .af-ring {
-  stroke-dasharray: 60 217;
-  animation: af-spin 1.4s linear infinite;
+  animation: af-breathe 4s ease-in-out infinite;
 }
 
 .amos-face-stage[data-state="synthesizing"] .af-ring {
-  animation: af-pulse 0.6s ease-in-out infinite;
+  animation: af-pulse 2.4s ease-in-out infinite;
+}
+
+.amos-face-stage[data-state="transcribing"] .af-mouth,
+.amos-face-stage[data-state="thinking"] .af-mouth,
+.amos-face-stage[data-state="synthesizing"] .af-mouth {
+  animation: af-calm 3.6s ease-in-out infinite;
 }
 
 .amos-face-stage[data-state="error"] .af-ring,
@@ -3127,8 +3132,14 @@ button, .touch-target {
   to { transform: rotate(360deg); }
 }
 
+@keyframes af-calm {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .amos-face-stage[data-state] .af-ring {
+  .amos-face-stage[data-state] .af-ring,
+  .amos-face-stage[data-state] .af-mouth {
     animation: none;
   }
 }
