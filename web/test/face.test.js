@@ -446,7 +446,7 @@ test('Amos face conversation log', async (t) => {
     ]);
   });
 
-  await t.test('five distinct messages keep only the last four', () => {
+  await t.test('five distinct messages keep only the last three', () => {
     const { doc, sseClient } = mountStage();
     const handler = sseClient.handlers.get('voice.state');
     for (let i = 1; i <= 5; i += 1) {
@@ -454,7 +454,7 @@ test('Amos face conversation log', async (t) => {
     }
     assert.deepEqual(
       rowsOf(convoOf(doc)).map((r) => r.text),
-      ['message 2', 'message 3', 'message 4', 'message 5'],
+      ['message 3', 'message 4', 'message 5'],
     );
   });
 
@@ -477,8 +477,8 @@ test('Amos face conversation log', async (t) => {
     handler({ state: 'speaking', reply: 'First answer.' });
     handler({ state: 'thinking', transcript: 'second question' });
     handler({ state: 'speaking', reply: 'Second answer.' });
+    // CONVO_MAX is 3, so the oldest of the four rows is dropped.
     assert.deepEqual(rowsOf(convoOf(doc)), [
-      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'first question' },
       { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'First answer.' },
       { cls: 'af-msg af-msg-you', who: 'YOU', text: 'second question' },
       { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'Second answer.' },

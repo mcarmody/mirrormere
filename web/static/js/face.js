@@ -30,7 +30,7 @@
   const EASE_MAX_DT_MS = 100;
   const DECAY_TAU_MS = 120;
   const DRAW_MIN_MS = 25;
-  const CONVO_MAX = 4;
+  const CONVO_MAX = 3;
 
   function hasFaceParam() {
     const search = typeof window !== 'undefined' && window.location ? window.location.search : '';
