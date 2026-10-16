@@ -13,12 +13,19 @@ const {
 function createMockElement(tagName = 'div') {
   const attributes = new Map();
   const children = [];
+  let text = '';
   return {
     tagName: tagName.toUpperCase(),
     id: '',
     className: '',
     dataset: {},
-    textContent: '',
+    // Like the DOM, assigning textContent replaces every child node.
+    get textContent() { return text; },
+    set textContent(value) {
+      for (const child of children) child.parentNode = null;
+      children.length = 0;
+      text = String(value);
+    },
     children,
     parentNode: null,
     setAttribute(name, value) { attributes.set(name, String(value)); },
@@ -406,6 +413,52 @@ test('Amos face stage', async (t) => {
  * Fake EventSource factory. Each opened stream records its url and listeners;
  * emit(type, data) delivers an event the way EventSource would.
  */
+test('Amos face conversation log', async (t) => {
+  const convoOf = (doc) => doc.body.children.find((c) => c.id === 'amos-face-convo');
+  const rowsOf = (convo) => convo.children.map((row) => ({
+    cls: row.className,
+    who: row.children[0].textContent,
+    text: row.children[1].textContent,
+  }));
+
+  await t.test('transcript then reply adds a YOU row then an AMOS row', () => {
+    const { doc, sseClient } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'thinking', transcript: 'what time is it' });
+    handler({ state: 'speaking', reply: 'Quarter to nine.' });
+    const convo = convoOf(doc);
+    assert.ok(convo, '#amos-face-convo exists');
+    assert.equal(convo.getAttribute('aria-hidden'), 'true');
+    assert.deepEqual(rowsOf(convo), [
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'what time is it' },
+      { cls: 'af-msg af-msg-amos', who: 'AMOS', text: 'Quarter to nine.' },
+    ]);
+  });
+
+  await t.test('repeating the same transcript adds no row', () => {
+    const { doc, sseClient } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    handler({ state: 'listening', transcript: 'hello there' });
+    handler({ state: 'thinking', transcript: 'hello there' });
+    handler({ state: 'thinking', transcript: '  hello there  ' });
+    assert.deepEqual(rowsOf(convoOf(doc)), [
+      { cls: 'af-msg af-msg-you', who: 'YOU', text: 'hello there' },
+    ]);
+  });
+
+  await t.test('five distinct messages keep only the last four', () => {
+    const { doc, sseClient } = mountStage();
+    const handler = sseClient.handlers.get('voice.state');
+    for (let i = 1; i <= 5; i += 1) {
+      handler({ state: 'thinking', transcript: `message ${i}` });
+    }
+    assert.deepEqual(
+      rowsOf(convoOf(doc)).map((r) => r.text),
+      ['message 2', 'message 3', 'message 4', 'message 5'],
+    );
+  });
+});
+
 function createFakeStreamFactory() {
   const streams = [];
   const factory = (url) => {
