@@ -801,3 +801,27 @@ button, .touch-target {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
   word-break: break-word;
 }
+
+/* Amos state word overlay (?face=1 only). See web/static/js/face.js. */
+.amos-face {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+  pointer-events: none;
+  font-size: 14vh;
+  letter-spacing: 0.08em;
+  color: var(--mm-text-primary);
+  transition: opacity 200ms ease-out;
+}
+
+.amos-face[data-state="idle"] {
+  opacity: 0.25;
+  font-size: 6vh;
+}
+
+.amos-face[data-state="error"] {
+  color: #c9822b;
+}

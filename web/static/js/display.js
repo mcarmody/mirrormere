@@ -345,6 +345,10 @@
         });
       }
 
+      if (window.MirrormereFace && window.MirrormereFace.FaceController) {
+        window.amosFace = new window.MirrormereFace.FaceController({ sseClient: sseClient });
+      }
+
       sseClient.on('screen.rotate', (data) => {
         if (carousel) carousel.handleScreenRotate(data);
       });
